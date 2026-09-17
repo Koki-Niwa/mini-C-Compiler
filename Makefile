@@ -9,9 +9,18 @@ main: main.cpp
 test: main
 	./test.sh
 
-# 清理：删除编译产物、临时汇编、测试生成文件
-clean:
-	rm -f main *.o *~ tmp tmp.s
+# dbg伪目标：带调试输出跑一次，用法 make dbg ARGS='1--1'；依赖main保证用的是最新代码
+dbg: main
+	CALC_DEBUG=1 ./main $(ARGS)
 
-# 声明伪目标，test、clean不是磁盘文件
-.PHONY: test clean
+# 所有"生成出来的"文件（不是源码，删了随时能重建）
+# main/a.out 编译器本体，tmp/tmp.s 测试中间产物，*.o/*~ 编译与编辑器临时文件，*.log/log 输出重定向留下的
+GENERATED=main a.out tmp tmp.s *.o *~ put.log debug.log log
+
+# 清理：只删生成物，main.cpp / Makefile / test.sh 三个源码文件不受影响
+clean:
+	rm -f $(GENERATED)
+	@echo "已清理: $(GENERATED)"
+
+# 声明伪目标，test、dbg、clean不是磁盘文件
+.PHONY: test dbg clean
