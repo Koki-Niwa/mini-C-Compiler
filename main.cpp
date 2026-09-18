@@ -1,168 +1,174 @@
-#include <iostream>
-#include <cstdlib>
 #include <string>
+#include <iostream>
 #include <vector>
-#include <charconv>
 #include <cctype>
-#include <string_view>
-#include <stdexcept>
-#include <cstring>
 #include <utility>
-#include <iomanip>
 
-namespace calc{
+namespace calc {
+    //token的种类有保留字，数字，结尾标识
     enum class TokenKind{
         Reserved,
         Number,
         End,
     };
-    struct Token{
-        TokenKind kind;
-        std::string_view text;
-        long value =0;
-        std::size_t offset =0 ;//用于记录每个token的起始位置，用于报错
+    class Token {
+        private:
+            TokenKind kind;//token种类
+            std::string_view text;//token本身的文本,reserved和num就是他们本身，end为空
+            long value;//存num的值，其他类型默认为0
+            std::size_t offset =0 ;//这个标识tokenize后的位置，比如"12+ 34",内容为34的token的offset为3（空格被tokenize处理掉了，从0开始）
+        public:
+            Token(TokenKind k,std::string_view t,long v,std::size_t off)
+                : kind(k),text(t),value(v),offset(off){}
+            TokenKind get_kind()const {return kind;}
+            std::string_view get_text() const{return text;}
+            long get_value() const {return value;}
+            std::size_t get_offset() const { return offset; }
+            std::size_t get_len()const {return text.size();}//token的text的长度
     };
-    class CompileError :public std::runtime_error{
-        private: 
-            std::size_t offset_=0;
-            std::size_t len_=0;
-        public: 
-            CompileError(const std::string& message,std::size_t offset,std::size_t len):
-                std::runtime_error(message),offset_(offset),len_(len){}
-            std::size_t offset()const{return offset_;}
-            std::size_t len()const{return len_;}
-    };
-    //修改打印错误信息，包含offset和len
-    [[noreturn]]inline void error(const std::string& message,std::size_t offset,std::size_t len){
-        throw CompileError{message,offset,len};
-    }
-    //调试开关：CALC_DEBUG 未设置、为空串、或正好等于 "0" 时关闭，其它值一律打开
-    inline bool debug_enabled(){
-        const char* v =std::getenv("CALC_DEBUG");
-        return v !=nullptr && v[0] !='\0' && std::strcmp(v,"0") !=0;
-    }
-    inline const char* kind_name(TokenKind k){
-        switch(k){
-            case TokenKind::Number:   return "Number";
-            case TokenKind::Reserved: return "Reserved";
-            case TokenKind::End:      return "End";
-        }
-        return "?";//故意不写 default：将来新增 TokenKind 时，编译器会在这里报未覆盖
-    }
     class Tokenizer{
+        private:
+            std::string_view source_code_;//保留输入的src
+            std::size_t position_{0};//当前tokenize进行到的位置
+            std::size_t token_offset_{0};
+            //跳过空白
+            void skip_space(){
+                while(position_<source_code_.size() && std::isspace(static_cast<unsigned char>(source_code_[position_]))){
+                    position_++;
+                }
+            }
+            Token tokenize_number(){
+                const auto start_position = position_;
+                while(position_<source_code_.size() && std::isdigit(static_cast<unsigned char>(source_code_[position_]))){
+                    position_++;
+                }//循环后position_被更新到下一个不是数字的字符处
+                auto number_string = source_code_.substr(start_position,position_-start_position);//获取数字字符串
+                long number_value = std::stol(static_cast<std::string>(number_string));//获取数值
+                Token token(TokenKind::Number,number_string,number_value,token_offset_);//新建token
+                token_offset_+=token.get_len();//offset向后移动token的len长度
+                return token;
+            }
+            Token tokenize_plus_and_sub (){
+                Token token(TokenKind::Reserved,source_code_.substr(position_,1),0,token_offset_);
+                position_++;
+                token_offset_++;//offset向后移动一个长度
+                return token;
+            }
         public:
-            explicit Tokenizer(std::string_view src,bool debug=false):src_(src),debug_(debug){}
+            explicit Tokenizer(std::string_view src): source_code_(src){}
+            //把输入的文本tokenize
             std::vector<Token> run(){
-                std::vector<Token> tokens;
-                if(debug_){
-                    std::cerr<<"[CALC_DEBUG] tokens:\n";
+                std::vector<Token> token_list ;
+                //循环处理放入list中
+                while(position_<source_code_.size()){
+                    //处理空白
+                    skip_space();
+                    if(position_>=source_code_.size()){
+                        break;
+                    }
+                    const char current_char =source_code_[position_];
+                    //处理数字
+                    if(isdigit(static_cast<unsigned char>(current_char))){
+                        token_list.push_back(tokenize_number());
+                        continue;
+                    }
+                    //处理加减
+                    if(current_char=='+' || current_char=='-'){
+                        token_list.push_back(tokenize_plus_and_sub());
+                        continue;
+                    }
+                    //其他情况的处理
+                    std::cerr<<"tokenize error: invalid char:"<<current_char<<std::endl ;
+                    position_++;
                 }
-                std::size_t pos=0;
-                while(pos<src_.size()){
-                    const char c =src_[pos];
-                    if(std::isspace(static_cast<unsigned char>(c))){
-                        pos++;
-                        continue;
-                    }
-                    if(c=='+' || c== '-'){
-                        add(tokens,Token{TokenKind::Reserved,src_.substr(pos,1),0,pos});
-                        pos++;
-                        continue;
-                    }
-                    if(std::isdigit(static_cast<unsigned char>(c))){
-                        const std::size_t begin = pos ;
-                        const char*first=src_.data()+pos;
-                        const char*last=src_.data()+src_.size();
-                        long value =0 ;
-                        const auto [ptr,ec]=std::from_chars(first,last,value,10);
-                        pos=static_cast<size_t>(ptr-src_.data());
-                        if(ec==std::errc::result_out_of_range){
-                            error("number is too large",begin,pos-begin);
+                //在结尾加end
+                token_list.emplace_back(TokenKind::End, std::string_view{}, 0, token_offset_);
+                return token_list;
+            }
+            //调试用的dump函数
+            void dump_token_list(const std::vector<Token>&  token_list){
+                std::cout<<"token list :"<<std::endl;
+                for (const auto & token:token_list){
+                    std::cout <<token.get_offset()<<":\t"<<token.get_text()<<"\t";
+                    switch (token.get_kind()) {
+                        case TokenKind::Reserved:
+                            std::cout << "Reserved\t";
+                            break;
+                        case TokenKind::Number:
+                            std::cout << "Number\t\t";
+                            break;
+                        case TokenKind::End:
+                            std::cout << "End\t\t";
+                            break;
                         }
-                        add(tokens,Token{TokenKind::Number,src_.substr(begin,pos-begin),value,begin});
-                        continue;   
-                    }   
-                    error("Cannot tokenize",pos,1);
+                    std::cout <<"len:"<<token.get_len()<<'\t'<<"value:"<<token.get_value()<<'\t'<<std::endl;          
                 }
-                add(tokens,Token{TokenKind::End,src_.substr(pos),0,pos});
-                return tokens;
             }
-        private:
-            //所有 token 唯一的入口：先按需打印，再入队
-            void add(std::vector<Token>& out,Token t){
-                if(debug_){
-                    print_token(out.size(),t);
-                }
-                out.push_back(std::move(t));
-            }
-            void print_token(std::size_t index,const Token& t)const{
-                //定宽列在前，变宽的 text 放最后 —— 这样既对齐又不影响流式打印
-                std::cerr<<"  ["<<std::setw(3)<<std::right<<index<<"] "
-                         <<std::setw(8)<<std::left<<kind_name(t.kind)
-                         <<"  offset="<<std::setw(4)<<std::right<<t.offset
-                         <<"  len="<<std::setw(3)<<t.text.size()
-                         <<"  value="<<std::setw(6)<<t.value
-                         <<"  text=["<<t.text<<"]\n";
-            }
-            std::string_view src_;
-            bool debug_ =false;
     };
-    inline std::vector<Token> tokenize(std::string_view src,bool debug=false){
-        return Tokenizer{src,debug}.run();
-    }
-    class Parser{
+    class Parser {
         private:
-            std::vector<Token> tokens_;
-            std::size_t pos_ =0 ;
-            bool is_reserved(char op)const{
-                const Token & t =tokens_[pos_];
-                return t.kind == TokenKind::Reserved
-                        && t.text.size()==1
-                        && t.text[0]==op;
-            }
+            std::vector<Token> token_list_ ;
+            int position_{0};
         public:
-            explicit Parser(std::vector<Token>tokens) : tokens_(std::move(tokens)){}
-            bool consume(char op){
-                if(!is_reserved(op)){
+            explicit Parser(std::vector<Token>token_list):token_list_(std::move(token_list)){}
+            //对保留字有两种操作，一种是expect，表示下一个必须是这个，另一种是consume，尝试处理这个符号，如果不是这个符号则返回
+            //例子:我们对num +|— num这样的表达式，处理到中间的符号时一般consume +，else expect -
+            bool is_reserved (char op ){
+                return token_list_[position_].get_kind()==TokenKind::Reserved
+                    && token_list_[position_].get_text()[0]==op
+                    && token_list_[position_].get_text().size()==1;
+            }
+            bool consume (char op ){
+                if(is_reserved(op)){
+                    position_++;
+                    return true;
+                }else{
                     return false;
                 }
-                pos_++;
-                return true;
             }
-            void expect(char op){
-                if(!is_reserved(op)){
-                    error("expected '"+std::string(1,op)+"'",tokens_[pos_].offset,tokens_[pos_].text.size());
-                }
-                pos_++;
+            bool expect (char op ){
+                if(is_reserved(op)){
+                    position_++;
+                    return true;
+                }else{
+                    return false;//TODO:这里应该是报错，后续我会为编译器添加清晰的报错功能
+                                //暂时这么处理，这样expect和consume暂时是一样的，但是他们在main函数中的后续处理以及抽象的含义是不同的
+                } 
             }
+            //当前的逻辑只需要写一个expect number就可以
             long expect_number(){
-                if(tokens_[pos_].kind !=TokenKind::Number){
-                    error("expected a number",tokens_[pos_].offset,tokens_[pos_].text.size());
+                if(token_list_[position_].get_kind()!=TokenKind::Number){
+                    std::cerr<<"parse error: expect a number";//TODO:这里应该是报错，后续补充
                 }
-                return tokens_[pos_++].value;
+                return token_list_[position_++].get_value();//++这个运算还是很有用的
             }
-            bool at_end() const {
-                return tokens_[pos_].kind == TokenKind::End;
+            //处理字符的循环需要一个判断是否是end的函数
+            bool at_end (){
+                return token_list_[position_].get_kind()== TokenKind::End;
             }
-        };
-} // namespace calc
-
+    };
+}//namespace of calc
 int main( int argc ,char* argv[]){
+    //处理错误的参数数量
     if(argc != 2 ){
         std::cerr<<"wrong number of arguments\n";
         return EXIT_FAILURE;
     }
-    const bool debug =calc::debug_enabled();
-    const std::string_view source{argv[1]};
-    try{
-        auto tokens =calc::tokenize(source,debug);
-
-        calc::Parser parser{std::move(tokens)};
-        std::cout<<".intel_syntax noprefix\n"
-                    ".globl main\n"
-                    "main:\n";
-        std::cout<<"    mov rax,"<<parser.expect_number()<<'\n';
-        while(!parser.at_end()){
+    //接收输入
+    const std::string_view source_code{argv[1]};
+    //tokenize
+    calc::Tokenizer Tokenizer(source_code);
+    auto token_list =Tokenizer.run();
+    // //调试用，dump token
+    // Tokenizer.dump_token_list(token_list);
+    //parse
+    //内部逻辑：先expect一个数字，之后进入只要不是end的循环，先consume+后expect-，然后expect一个数字
+    calc::Parser parser(std::move(token_list));
+    std::cout<<".intel_syntax noprefix\n"
+                ".globl main\n"
+                "main:\n";
+    std::cout<<"    mov rax,"<<parser.expect_number()<<'\n';
+    while(!parser.at_end()){
             if(parser.consume('+')){
                 std::cout<<"    add rax,"<<parser.expect_number()<<'\n';
                 continue;
@@ -171,15 +177,5 @@ int main( int argc ,char* argv[]){
             std::cout<<"    sub rax,"<<parser.expect_number()<<'\n';
         }
         std::cout<<"    ret"<<'\n';
-
-        }catch(const calc::CompileError& e){      
-        std::cerr << "[offset=" << e.offset()
-                  << " len=" << e.len() << "] "
-                  << e.what() << '\n';        
-        return EXIT_FAILURE;
-    }catch(const std::exception&e){           
-        std::cerr << e.what() << '\n';
-        return EXIT_FAILURE;
-    }
     return EXIT_SUCCESS;
 }
